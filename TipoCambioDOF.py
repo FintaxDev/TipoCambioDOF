@@ -1,56 +1,94 @@
-import datetime
-import requests
-import re
-import sys
-from bs4 import BeautifulSoup
 from PyQt5 import QtCore, QtWidgets, QtWebEngineWidgets
-from tkinter import *
-from tkinter import messagebox
-from tkcalendar import *
 
-def descarga_pdf():
-    
-    fecha = datetime.datetime.strptime(cal.get_date(), "%d-%m-%Y").strftime("%Y-%m-%d")
-    day = datetime.datetime.strptime(cal.get_date(), "%d-%m-%Y").strftime("%d")
-    month = datetime.datetime.strptime(cal.get_date(), "%d-%m-%Y").strftime("%m")
-    year = datetime.datetime.strptime(cal.get_date(), "%d-%m-%Y").strftime("%Y")
-    strURL = "https://www.dof.gob.mx/index_111.php?year=" + year + "&month=" + month + "&day=" + day + "&edicion=MAT"
-    req = requests.get(strURL)
-    soup = BeautifulSoup(req.text, "lxml")
+SCRIPT_FIND_URL = """
+var url = ""
+var phrase = "Tipo de cambio para solventar obligaciones denominadas en moneda extranjera pagaderas en la República Mexicana."
+var elements = document.getElementsByTagName("a");
+for(const e of elements){
+    if(e.text.includes(phrase))
+        url = e.href
+}
+url
+"""
 
-    for sub_heading in soup.find_all("a", href=True):
+class PageOffline(QtWebEngineWidgets.QWebEnginePage):
+    finished = QtCore.pyqtSignal(bool)
 
-        if re.sub("[^\w .]", "", sub_heading.text) == "Tipo de cambio para solventar obligaciones denominadas en moneda extranjera pagaderas en la República Mexicana.":
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.date_url = QtCore.QUrl()
+        self.loadFinished.connect(self.handle_loaded)
+        self.pdfPrintingFinished.connect(self.handle_pdf)
 
-            DOF_URL = "https://www.dof.gob.mx" + sub_heading.get("href")
+    def search(self, date):
+        self.date = date
+        self.date_url = QtCore.QUrl("https://www.dof.gob.mx/index_111.php")
+        query = QtCore.QUrlQuery()
+        query.addQueryItem("year", self.date.toString("yyyy"))
+        query.addQueryItem("month", self.date.toString("MM"))
+        query.addQueryItem("day", self.date.toString("dd"))
+        query.addQueryItem("edicion", "MAT")
+        self.date_url.setQuery(query)
+        self.load(self.date_url)
 
-            app = QtWidgets.QApplication(sys.argv)
-            loader = QtWebEngineWidgets.QWebEngineView()
-            loader.page().pdfPrintingFinished.connect(loader.close)
-            loader.load(QtCore.QUrl(DOF_URL))
+    def handle_loaded(self, ok):
+        if ok:
+            if self.url() == self.date_url:
+                self.runJavaScript(SCRIPT_FIND_URL, self.handle_url)
+            else:
+                filename = "{}.pdf".format(self.date.toString("yyyy-MM-dd"))
+                self.printToPdf(filename)
+        else:
+            self.finished.emit(False)
 
-            def emit_pdf(finished):
-                loader.page().printToPdf(fecha + ".pdf")
-                messagebox.showinfo("Descarga", "Descarga exitosa.")
+    def handle_url(self, url):
+        if url:
+            pdf_url = QtCore.QUrl.fromUserInput(url)
+            self.load(pdf_url)
+        else:
+            self.finished.emit(False)
 
-            loader.loadFinished.connect(emit_pdf)
-            loader.loadFinished.connect(app.exit)
-            app.exec()
+    def handle_pdf(self, path, ok):
+        self.finished.emit(ok)
 
-root = Tk()
-root.title("Seleccionar fecha")
-root.iconbitmap("icono.ico")
-root.geometry("400x400")
+class Widget(QtWidgets.QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
 
-fecha_hoy = datetime.datetime.now()
-dia_hoy = int(fecha_hoy.strftime("%d"))
-mes_hoy = int(fecha_hoy.strftime("%m"))
-año_hoy = int(fecha_hoy.strftime("%Y"))
+        self.page = PageOffline()
 
-cal = Calendar(root, selectmode="day", year=año_hoy, month=mes_hoy, day=dia_hoy, date_pattern="dd-mm-yyyy")
-cal.pack(pady=20, fill="both", expand=True)
+        self.button = QtWidgets.QPushButton("Generar pdf")
+        self.calendar = QtWidgets.QCalendarWidget()
 
-my_button = Button(cal, text="Descargar PDF", command=descarga_pdf)
-my_button.pack(pady=20)
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.addWidget(self.calendar)
+        lay.addWidget(self.button, alignment=QtCore.Qt.AlignCenter)
 
-root.mainloop()
+        self.button.clicked.connect(self.handle_clicked)
+        self.page.finished.connect(self.handle_print_finished)
+
+    def handle_clicked(self):
+        date = self.calendar.selectedDate()
+        self.page.search(date)
+        self.button.setEnabled(False)
+
+    def handle_print_finished(self, status):
+        QtWidgets.QMessageBox.information(
+            self,
+            "Generación de PDF",
+            "El PDF fue generado con éxito" if status else "La generación de PDF falló",
+        )
+        self.button.setEnabled(True)
+
+def main():
+    import sys
+
+    app = QtWidgets.QApplication(sys.argv)
+    QtCore.QLocale.setDefault(QtCore.QLocale(QtCore.QLocale.Spanish))
+    w = Widget()
+    w.resize(400, 400)
+    w.show()
+    sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main()
